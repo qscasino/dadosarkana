@@ -476,17 +476,14 @@
     const DICE_MIN_X_GAP = 1.35; // separación mínima en X para que se vean ambos (evita tapado por perspectiva)
 
     function enforceDiceSeparation(){
-      // Un par de iteraciones para estabilizar incluso si alguno queda pegado a un borde
       for(let k=0;k<3;k++){
         let dx = dice2.position.x - dice1.position.x;
         let dz = dice2.position.z - dice1.position.z;
         let dist = Math.sqrt(dx*dx + dz*dz);
 
-        // 1) Repulsión suave si están demasiado cerca en XZ
         if(dist < DICE_MIN_SEP){
           let nx, nz;
           if(dist < 1e-4){
-            // si están prácticamente en el mismo punto, empujamos en X
             nx = 1; nz = 0;
             dist = 1;
           } else {
@@ -500,17 +497,15 @@
           dice2.position.z += nz * push;
         }
 
-        // 2) Garantiza “lectura” en cámara: que no queden uno arriba del otro en X
         dx = dice2.position.x - dice1.position.x;
         const absDx = Math.abs(dx);
         if(absDx < DICE_MIN_X_GAP){
-          const dir = (dx === 0) ? 1 : Math.sign(dx); // si empatan, separa hacia izquierda/derecha
+          const dir = (dx === 0) ? 1 : Math.sign(dx);
           const need = (DICE_MIN_X_GAP - absDx) * 0.5;
           dice1.position.x -= dir * need;
           dice2.position.x += dir * need;
         }
 
-        // Clamp bounds para que NO salgan
         dice1.position.x = clamp(dice1.position.x, SAFE_BOUNDS.minX, SAFE_BOUNDS.maxX);
         dice1.position.z = clamp(dice1.position.z, SAFE_BOUNDS.minZ, SAFE_BOUNDS.maxZ);
         dice2.position.x = clamp(dice2.position.x, SAFE_BOUNDS.minX, SAFE_BOUNDS.maxX);
@@ -518,7 +513,55 @@
       }
     }
 
+    // =========================
+    // LocalStorage propio de ESTA página (premio persistente)
+    // =========================
+    const LS_PREFIX = 'arkana_dados_tesoro_playa_v1';
+    const LS_LAST_PLAY = `${LS_PREFIX}_lastPlay`;     // mantiene tu timer actual
+    const LS_LAST_PRIZE = `${LS_PREFIX}_lastPrize`;   // guarda el resultado/premio
+
+    // =========================
+    // Audio (desde /assets)
+    // =========================
+    // Cambiá los nombres si tus archivos tienen otro nombre:
+    const AUDIO = {
+      bg:   '/assets/background.mp3', // loop background
+      roll: '/assets/roll.mp3',       // movimiento de dados
+      popup:'/assets/popup.mp3'       // aparece el popup
+    };
+
+    let bgAudio = null;
+    let audioUnlocked = false;
+
+    function ensureBackgroundAudio(){
+      if(bgAudio) return;
+      bgAudio = new Audio(AUDIO.bg);
+      bgAudio.loop = true;
+      bgAudio.volume = 0.25;
+      bgAudio.preload = 'auto';
+    }
+
+    function unlockAudioAndStartBG(){
+      if(audioUnlocked) return;
+      audioUnlocked = true;
+
+      ensureBackgroundAudio();
+      // Intentamos reproducir; si el navegador bloquea, ya quedará listo para el próximo gesto.
+      bgAudio.play().catch(()=>{});
+    }
+
+    function sfx(url, volume){
+      try{
+        // sfx independiente para no cortar el background
+        const a = new Audio(url);
+        a.volume = volume;
+        a.play().catch(()=>{});
+      }catch(e){}
+    }
+
+    // =========================
     // Mapeo de caras por normal local (BoxGeometry: px,nx,py,ny,pz,nz)
+    // =========================
     const FACE_BY_LOCAL_NORMAL = [
       { n: new THREE.Vector3(0, 1, 0), value: 1 }, // +Y top
       { n: new THREE.Vector3(0,-1, 0), value: 6 }, // -Y bottom
@@ -674,12 +717,12 @@
       const geo = new THREE.BoxGeometry(size,size,size);
 
       const mats = [
-        createFaceMaterial(3), // +X
-        createFaceMaterial(4), // -X
-        createFaceMaterial(1), // +Y
-        createFaceMaterial(6), // -Y
-        createFaceMaterial(2), // +Z
-        createFaceMaterial(5)  // -Z
+        createFaceMaterial(3),
+        createFaceMaterial(4),
+        createFaceMaterial(1),
+        createFaceMaterial(6),
+        createFaceMaterial(2),
+        createFaceMaterial(5)
       ];
 
       const dice = new THREE.Mesh(geo, mats);
@@ -764,7 +807,10 @@
     function rollDice(){
       if(isRolling) return;
 
-      const lastPlay = localStorage.getItem('luckyDiceLastPlay');
+      // desbloquea audio + inicia background en el primer gesto del usuario
+      unlockAudioAndStartBG();
+
+      const lastPlay = localStorage.getItem(LS_LAST_PLAY);
       if(lastPlay){
         const timeSince = Date.now() - parseInt(lastPlay,10);
         if(timeSince < 24*60*60*1000) return;
@@ -774,7 +820,9 @@
       document.getElementById('rollButton').disabled = true;
       document.getElementById('scoreDisplay').style.display = 'block';
 
-      playSound('roll');
+      // sonido de movimiento de dados
+      sfx(AUDIO.roll, 0.60);
+
       simulateRollNoReturn();
     }
 
@@ -782,20 +830,15 @@
       const duration = 2300;
       const start = performance.now();
 
-      // arrancan desde donde estaban (más real), solo les damos un “impulso” y altura
-      // levantamos un poco para que parezca que rebotan
       dice1.position.y = Math.max(dice1.position.y, 0.9);
       dice2.position.y = Math.max(dice2.position.y, 1.0);
 
-      // impulso (simulado) hacia delante + lateral leve
       const vel1 = { x: (Math.random()*0.06 - 0.03), z: (0.09 + Math.random()*0.05), rx: 0.18 + Math.random()*0.10, ry: 0.12 + Math.random()*0.10, rz: 0.10 + Math.random()*0.08 };
       const vel2 = { x: (Math.random()*0.06 - 0.03), z: (0.09 + Math.random()*0.05), rx: 0.18 + Math.random()*0.10, ry: 0.12 + Math.random()*0.10, rz: 0.10 + Math.random()*0.08 };
 
-      // para evitar que siempre vayan al fondo, invertimos si ya están muy atrás
       if(dice1.position.z > 1.0) vel1.z *= -1;
       if(dice2.position.z > 1.0) vel2.z *= -1;
 
-      // rotación inicial un poco random (pero NO imponemos rotación final)
       dice1.rotation.x += Math.random()*Math.PI;
       dice1.rotation.y += Math.random()*Math.PI;
       dice1.rotation.z += Math.random()*Math.PI;
@@ -808,13 +851,9 @@
         const now = performance.now();
         const t = Math.min((now - start)/duration, 1);
 
-        // fricción progresiva
-        const friction = 1 - Math.pow(t, 1.6); // al final casi 0
-
-        // bounce en Y
+        const friction = 1 - Math.pow(t, 1.6);
         const bounce = Math.sin(t * Math.PI * 3) * (1 - t) * 0.9;
 
-        // mover y rotar con fricción
         dice1.position.x += vel1.x * friction;
         dice1.position.z += vel1.z * friction;
         dice1.position.y = SAFE_BOUNDS.y + Math.max(0, bounce);
@@ -831,23 +870,17 @@
         dice2.rotation.y += vel2.ry * friction;
         dice2.rotation.z += vel2.rz * friction;
 
-        // clamp bounds para que NO salgan
         dice1.position.x = clamp(dice1.position.x, SAFE_BOUNDS.minX, SAFE_BOUNDS.maxX);
         dice1.position.z = clamp(dice1.position.z, SAFE_BOUNDS.minZ, SAFE_BOUNDS.maxZ);
         dice2.position.x = clamp(dice2.position.x, SAFE_BOUNDS.minX, SAFE_BOUNDS.maxX);
         dice2.position.z = clamp(dice2.position.z, SAFE_BOUNDS.minZ, SAFE_BOUNDS.maxZ);
 
-        // ✅ evita superposición / tapado entre dados
         enforceDiceSeparation();
 
-        // display durante rodado: muestra aproximación,
-        // pero al final se setea exacto desde caras visibles
         if(t < 0.92){
           document.getElementById('scoreValue').textContent = (2 + Math.floor(Math.random()*11));
           requestAnimationFrame(tick);
         } else {
-          // último tramo: ya casi quietos → congelamos EXACTAMENTE donde quedaron
-          // no reposicionamos, no recalculamos nada después
           freezeAndResolve();
         }
       }
@@ -855,21 +888,17 @@
       requestAnimationFrame(tick);
 
       function freezeAndResolve(){
-        // ✅ Aseguramos separación final antes de “congelar” (para que se vean ambos)
         enforceDiceSeparation();
 
-        // Dejamos Y fija (sobre arena) y “apagamos” el movimiento
         dice1.position.y = SAFE_BOUNDS.y;
         dice2.position.y = SAFE_BOUNDS.y;
 
-        // Calculamos la suma REAL por cara superior VISIBLE
         const v1 = getTopFaceValue(dice1);
         const v2 = getTopFaceValue(dice2);
         const total = v1 + v2;
 
         document.getElementById('scoreValue').textContent = total;
 
-        // esperamos un toque para que el usuario vea el resultado quieto
         setTimeout(()=>{
           showResult(v1, v2, total);
         }, 550);
@@ -884,12 +913,23 @@
       const prize = calculatePrize(total);
       document.getElementById('modalPrize').innerHTML = prize.html;
 
+      // guarda premio para que al recargar vuelva a mostrarse
+      try{
+        localStorage.setItem(LS_LAST_PRIZE, JSON.stringify({
+          d1, d2, total,
+          prizeHtml: prize.html,
+          at: Date.now()
+        }));
+      }catch(e){}
+
       document.getElementById('resultModal').classList.add('visible');
 
-      if(total >= 7){ playSound('win'); createConfetti(); }
-      else { playSound('reveal'); }
+      // sonido popup (aparece modal)
+      sfx(AUDIO.popup, 0.60);
 
-      localStorage.setItem('luckyDiceLastPlay', Date.now().toString());
+      if(total >= 7){ createConfetti(); }
+
+      localStorage.setItem(LS_LAST_PLAY, Date.now().toString());
       updateTimer();
     }
 
@@ -916,7 +956,7 @@
     // Timer (24h)
     // =========================
     function updateTimer(){
-      const lastPlay = localStorage.getItem('luckyDiceLastPlay');
+      const lastPlay = localStorage.getItem(LS_LAST_PLAY);
       if(!lastPlay){
         document.getElementById('timerContainer').classList.remove('visible');
         document.getElementById('rollButton').disabled = false;
@@ -927,7 +967,7 @@
       const remaining = 24*60*60*1000 - timeSince;
 
       if(remaining <= 0){
-        localStorage.removeItem('luckyDiceLastPlay');
+        localStorage.removeItem(LS_LAST_PLAY);
         document.getElementById('timerContainer').classList.remove('visible');
         document.getElementById('rollButton').disabled = false;
         return;
@@ -944,25 +984,6 @@
         `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 
       setTimeout(updateTimer, 1000);
-    }
-
-    // =========================
-    // Audio (ajustá rutas a tus archivos)
-    // =========================
-    function playSound(type){
-      try{
-        let url;
-        switch(type){
-          case 'roll': url = '/assets/audio/roll.mp3'; break;
-          case 'win': url = '/assets/audio/win.mp3'; break;
-          case 'reveal': url = '/assets/audio/reveal.mp3'; break;
-        }
-        if(url){
-          const a = new Audio(url);
-          a.volume = 0.55;
-          a.play().catch(()=>{});
-        }
-      }catch(e){}
     }
 
     // =========================
@@ -987,12 +1008,53 @@
       }
     }
 
+    // =========================
+    // Mostrar premio guardado al recargar (si existe)
+    // =========================
+    function showSavedPrizeIfAny(){
+      let saved = null;
+      try{
+        const raw = localStorage.getItem(LS_LAST_PRIZE);
+        if(raw) saved = JSON.parse(raw);
+      }catch(e){}
+
+      if(!saved) return;
+
+      // pinta el modal con el premio guardado
+      document.getElementById('scoreDisplay').style.display = 'block';
+      document.getElementById('scoreValue').textContent = saved.total ?? 0;
+
+      document.getElementById('modalDie1').textContent = getDieFace(saved.d1 || 1);
+      document.getElementById('modalDie2').textContent = getDieFace(saved.d2 || 1);
+      document.getElementById('modalTotal').textContent = saved.total ?? 2;
+      document.getElementById('modalPrize').innerHTML = saved.prizeHtml || calculatePrize(saved.total ?? 2).html;
+
+      document.getElementById('resultModal').classList.add('visible');
+    }
+
     // Init
     window.onload = function(){
       setTimeout(()=>{
         document.getElementById('loadingScreen').classList.add('hidden');
         initScene();
         updateTimer();
+
+        // prepara bg audio
+        ensureBackgroundAudio();
+
+        // desbloqueo de audio al primer gesto en la página (por políticas de autoplay)
+        const unlockOnce = () => {
+          unlockAudioAndStartBG();
+          window.removeEventListener('pointerdown', unlockOnce);
+          window.removeEventListener('keydown', unlockOnce);
+        };
+        window.addEventListener('pointerdown', unlockOnce, { once:false });
+        window.addEventListener('keydown', unlockOnce, { once:false });
+
+        // muestra el premio persistido (si existe) al recargar
+        // (lo hacemos luego de initScene para que todo esté listo)
+        setTimeout(()=>{ showSavedPrizeIfAny(); }, 180);
+
       }, 2200);
     };
   </script>
